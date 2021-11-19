@@ -66,33 +66,36 @@ defmodule AxonOnnx.Serialize do
     # Building the initializers with Tensors will result in a bunch of expensive
     # copies, so we instead accumulate names and then use them to build initializers
     # later
-    initializers = nodes
-                   |> Stream.filter(fn x ->
-                     x.op_type != "Concatenate"
-                   end)
-                   |> Stream.with_index
-                   |> Enum.map(fn ({node, i}) ->
-                     IO.puts "ALL INITS"
-                     IO.inspect params_or_initializers
-                     IO.inspect nodes
-                     to_initializers(params_or_initializers[node.name], [Enum.at(param_names, i)])# Enum.at(param_names, i))
-                   end)
+    # initializers = nodes
+    #                |> Stream.filter(fn x ->
+    #                  x.op_type != "Concatenate"
+    #                end)
+    #                |> Stream.with_index
+    #                |> Enum.map(fn ({node, i}) ->
+    #                  IO.puts "ALL INITS"
+    #                  IO.inspect params_or_initializers
+    #                  IO.inspect nodes
+    #                  to_initializers(params_or_initializers[node.name], [Enum.at(param_names, i)])# Enum.at(param_names, i))
+    #                end)
+
+    initializers = to_initializers(params_or_initializers, param_names)
+
 
     # Parameters need to be specified as graph inputs as well
-    updated_inputs = inputs ++ handle_param_names(nodes, param_names, params_or_initializers, fn (name, x) -> to_value_info(name, Nx.shape(x)) end)
-      # param_names
-      # |> Enum.reduce(
-      #   inputs,
-      #   fn x, acc ->
-      #     IO.puts "X"
-      #     IO.inspect x
-      #     param_value = to_value_info(x, Nx.shape(params_or_initializers[x]))
-      #     [param_value | acc]
-      #   end
-      # )
+    # updated_inputs = inputs ++ handle_param_names(nodes, param_names, params_or_initializers, fn (name, x) -> to_value_info(name, Nx.shape(x)) end)
+    updated_inputs =
+      param_names
+      |> Enum.reduce(
+        inputs,
+        fn x, acc ->
+          param_value = to_value_info(x.value, Nx.shape(params_or_initializers[x.layer][x.value]))
+          [param_value | acc]
+        end
+      )
 
+    # {_, _} = 2
 
-    IO.puts "GRAPH ======"
+    # IO.puts "GRAPH ======"
 
     %Graph{
       node: Enum.reverse(nodes),
@@ -100,7 +103,7 @@ defmodule AxonOnnx.Serialize do
       input: updated_inputs,
       output: [to_value_info(axon)],
       initializer: initializers
-    } |> IO.inspect
+    } # |> IO.inspect
   end
 
   def to_onnx(%Axon{op: :input} = axon, inputs, param_names, nodes) do
@@ -125,13 +128,16 @@ defmodule AxonOnnx.Serialize do
     {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
 
     %{name: k_name} = params["kernel"]
+    k_param = %{layer: name, value: k_name}
 
     {node_inputs, updated_param_names} =
       if use_bias do
         %{name: b_name} = params["bias"]
-        {[inp_name, k_name, b_name], [k_name, b_name | param_names]}
+        b_param = %{layer: name, value: b_name}
+
+        {[inp_name, k_name, b_param], [b_param, b_name | param_names]}
       else
-        {[inp_name, k_name], [k_name | param_names]}
+        {[inp_name, k_name], [k_param | param_names]}
       end
 
     node = %Node{
@@ -157,9 +163,12 @@ defmodule AxonOnnx.Serialize do
        ) do
     {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
 
-    %{name: k_name} = params["kernel"]
+    inp_param = inp_name # %{layer: inp_name}
 
-    {node_inputs, updated_param_names} = {[inp_name, k_name], [k_name | param_names]}
+    %{name: k_name} = params["kernel"]
+    k_param = %{layer: name, value: k_name}
+
+    {node_inputs, updated_param_names} = {[inp_param, k_name], [k_param | param_names]}
 
     node = %Node{
       input: node_inputs,
@@ -209,13 +218,13 @@ defmodule AxonOnnx.Serialize do
            |> Tuple.to_list
            |> List.flatten
          end)
-         |> IO.inspect
+         # |> IO.inspect
     # {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
     # {_, _} = 2
 
     axis_attr = to_attr("axis", :INT, axis)
 
-    {node_inputs, updated_param_names} = {inp_names, param_names}
+    {node_inputs, updated_param_names} = {for inp_name <- inp_names do inp_name end, param_names} # %{layer: inp_name}
 
     node = %Node{
       input: node_inputs,
@@ -486,15 +495,18 @@ defmodule AxonOnnx.Serialize do
   end
 
   def to_initializers(params_or_initializers, param_names) do
-    IO.puts "Params or initializers >>>"
-    IO.inspect params_or_initializers
-    IO.puts "Param names >>>"
-    IO.inspect param_names
+    # IO.puts "Params or initializers >>>"
+    # IO.inspect params_or_initializers
+    # IO.puts "Param names >>>"
+    # IO.inspect param_names
     param_names
     |> Enum.map(fn param ->
-      IO.puts "Param >>>"
-      IO.inspect param
-      nx_to_tensor_proto(param, params_or_initializers[param])
+      # IO.puts "Param >>>"
+      # IO.inspect param
+      # IO.puts "Value >>>"
+      # IO.inspect params_or_initializers[param.layer][param.value]
+      # nx_to_tensor_proto(param, params_or_initializers[param])
+      nx_to_tensor_proto(param.value, params_or_initializers[param.layer][param.value])
     end)
   end
 
@@ -512,11 +524,20 @@ defmodule AxonOnnx.Serialize do
     %Placeholder{shape: to_tensor_shape_proto(shape), elem_type: 1}
   end
 
-  def to_tensor_shape_proto(shape) do
+  def to_tensor_shape_proto(shape, nil_replacement \\ -1) do
     dims =
       shape
       |> Tuple.to_list()
       |> Enum.map(&%Dimension{value: {:dim_value, &1}})
+    
+    dims = 
+      dims
+      |> Enum.map(fn x ->
+        case x do
+          %Onnx.TensorShapeProto.Dimension{value: {:dim_value, nil}} -> %Onnx.TensorShapeProto.Dimension{x | value: {:dim_value, -1}}
+          _ -> x
+        end
+      end)
 
     %Shape{dim: dims}
   end
