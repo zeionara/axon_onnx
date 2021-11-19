@@ -135,7 +135,7 @@ defmodule AxonOnnx.Serialize do
         %{name: b_name} = params["bias"]
         b_param = %{layer: name, value: b_name}
 
-        {[inp_name, k_name, b_param], [b_param, b_name | param_names]}
+        {[inp_name, k_name, b_name], [k_param, b_param | param_names]}
       else
         {[inp_name, k_name], [k_param | param_names]}
       end
@@ -175,6 +175,60 @@ defmodule AxonOnnx.Serialize do
       output: [name],
       name: name,
       op_type: "Gemm"
+    }
+
+    {inputs, updated_param_names, [node | nodes]}
+  end
+
+  def to_onnx(
+         %Axon{
+           op: :flatten,
+           name: name,
+           parent: %Axon{name: inp_name} = parent,
+           params: params,
+         },
+         inputs,
+         param_names,
+         nodes
+       ) do
+    {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
+
+    inp_param = inp_name # %{layer: inp_name}
+
+    {node_inputs, updated_param_names} = {[inp_param], param_names}
+
+    node = %Node{
+      input: node_inputs,
+      output: [name],
+      name: name,
+      op_type: "Flatten"
+    }
+
+    {inputs, updated_param_names, [node | nodes]}
+  end
+
+  def to_onnx(
+         %Axon{
+           op: :reshape,
+           name: name,
+           parent: %Axon{name: inp_name} = parent,
+           params: params,
+         },
+         inputs,
+         param_names,
+         nodes
+       ) do
+    {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
+
+    inp_param = inp_name # %{layer: inp_name}
+
+    {node_inputs, updated_param_names} = {[inp_param], param_names}
+
+    node = %Node{
+      input: node_inputs,
+      output: [name],
+      name: name,
+      op_type: "Reshape"
     }
 
     {inputs, updated_param_names, [node | nodes]}
