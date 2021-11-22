@@ -820,7 +820,7 @@ defmodule AxonOnnx.Deserialize do
 
     reshape_options = options!(attrs)
 
-    IO.inspect reshape_options, structs: false
+    # IO.inspect reshape_options, structs: false
 
     inp = input_or_param!(inp, params, axon, used_params)
 
@@ -828,7 +828,7 @@ defmodule AxonOnnx.Deserialize do
       reshape_options["shape"]
       |> decode_shape
 
-    IO.inspect new_shape
+    # IO.inspect new_shape
 
     # raise "Stop execution before reshape layer decoding"
 
