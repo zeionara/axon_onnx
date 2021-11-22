@@ -211,16 +211,29 @@ defmodule AxonOnnx.Serialize do
   end
 
   def to_onnx(
-         %Axon{
-           op: :reshape,
-           name: name,
-           parent: %Axon{name: inp_name} = parent,
-           params: params,
-         },
-         inputs,
-         param_names,
-         nodes
-       ) do
+    %Axon{
+      op: :reshape,
+      name: name,
+      output_shape: shape,
+      parent: %Axon{name: inp_name} = parent,
+      params: params,
+    } = axon,
+    inputs,
+    param_names,
+    nodes
+  ) do
+    # IO.inspect axon, structs: false
+
+    output_shape_attr = to_attr(
+      "shape",
+      :INTS,
+      case Tuple.to_list(shape) do
+        [nil | non_batch_size_dimensions] -> [-1 | non_batch_size_dimensions]
+        dimensions -> dimensions
+      end
+    )
+
+    # raise "Stop before reshape layer serialization"
     {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes)
 
     inp_param = inp_name # %{layer: inp_name}
@@ -231,7 +244,8 @@ defmodule AxonOnnx.Serialize do
       input: node_inputs,
       output: [name],
       name: name,
-      op_type: "Reshape"
+      op_type: "Reshape",
+      attribute: [output_shape_attr]
     }
 
     {inputs, updated_param_names, [node | nodes]}

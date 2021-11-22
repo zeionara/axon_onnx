@@ -59,6 +59,17 @@ defmodule AxonOnnx.Deserialize do
     {hd(Enum.map(outputs, fn name -> nodes[name] end)), params}
   end
 
+  @spec decode_shape(list) :: tuple
+  defp decode_shape(encoded_shape) do
+    # IO.inspect encoded_shape
+    List.to_tuple(
+      case encoded_shape do # Tuple.to_list(shape) do
+        [-1 | non_batch_size_dimensions] -> [nil | non_batch_size_dimensions]
+        input_shape_with_constant_batch_size -> input_shape_with_constant_batch_size
+      end
+    )
+  end
+
   defp get_inputs(%Graph{input: inputs}, params, dimensions) do
     Enum.reduce(inputs, %{}, fn %Value{name: name, type: %Type{value: value}}, acc ->
       if Map.has_key?(params, name) do
@@ -68,15 +79,11 @@ defmodule AxonOnnx.Deserialize do
       else
         case value do
           {:tensor_type, %Placeholder{} = tensor} ->
-            input_shape = case Tuple.to_list(shape!(tensor, dimensions)) do
-              [-1 | non_batch_size_dimensions] -> List.to_tuple([nil | non_batch_size_dimensions])
-                # input_shape_with_variable_batch_size
-                # |> List.to_tuple
-                # |> Tuple.insert_at(0, nil)
-                # |> Tuple.delete_at(1)
-              input_shape_with_constant_batch_size -> List.to_tuple(input_shape_with_constant_batch_size)
-            end
-
+            input_shape = 
+              shape!(tensor, dimensions)
+              |> decode_shape
+            
+            # shape!(tensor, dimensions) |> IO.inspect
             # input_shape |> IO.inspect
             # {-1, remainder} = input_shape
             # remainder |> IO.inspect
@@ -803,20 +810,44 @@ defmodule AxonOnnx.Deserialize do
   end
 
   defp to_axon_reshape(
-         %Node{op_type: "Reshape", input: [inp], attribute: attrs, output: [output_name]},
+         %Node{op_type: "Reshape", input: [inp], attribute: attrs, output: [output_name]} = node,
          axon,
          params,
          used_params
-       ) do
+  ) do
+
+    # IO.inspect %{node: node, axon: axon, params: params, used_params: used_params}, structs: false
+
     reshape_options = options!(attrs)
+
+    IO.inspect reshape_options, structs: false
 
     inp = input_or_param!(inp, params, axon, used_params)
 
     new_shape =
       reshape_options["shape"]
-      |> List.to_tuple()
+      |> decode_shape
 
-    {Map.put(axon, output_name, Axon.reshape(inp, new_shape, name: output_name)), used_params}
+    IO.inspect new_shape
+
+    # raise "Stop execution before reshape layer decoding"
+
+    {
+      Map.put(
+        axon,
+        output_name,
+        Axon.reshape(
+          inp,
+          List.to_tuple(
+            case Tuple.to_list(new_shape) do
+              [nil | non_batch_size_dimensions] -> non_batch_size_dimensions
+              dimensions -> dimensions
+            end
+          ),
+          name: output_name
+        )
+      ), used_params
+    }
   end
 
   defp to_axon_flatten(
@@ -1096,6 +1127,6 @@ defmodule AxonOnnx.Deserialize do
           raise ArgumentError, "unsupported dimension type"
       end
     end)
-    |> List.to_tuple()
+    # |> List.to_tuple()
   end
 end
