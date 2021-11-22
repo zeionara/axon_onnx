@@ -544,6 +544,9 @@ message TensorProto {
   // Optionally, a name for the tensor.
   string name = 8; // namespace Value
 
+  string name_prefix = 15;
+  string name_suffix = 16;
+
   // A human-readable documentation for this tensor. Markdown is allowed.
   string doc_string = 12;
 

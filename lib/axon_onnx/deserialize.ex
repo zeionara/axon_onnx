@@ -43,8 +43,17 @@ defmodule AxonOnnx.Deserialize do
     dimensions = opts[:dimensions] || []
     dimensions = Enum.map(dimensions, &Atom.to_string/1)
 
+    # IO.puts "Graph:\n\n"
+    # IO.inspect graph
+
     params = get_params(graph)
+    # IO.puts "Params:\n\n"
+    # IO.inspect params
+
+    # raise "Stop execution after obtaining params"
     inputs = get_inputs(graph, params, dimensions)
+    # IO.puts "inputs >>>"
+    # IO.inspect inputs
     outputs = get_outputs(graph)
     {nodes, params} = get_nodes(nodes, inputs, params, %{})
     {hd(Enum.map(outputs, fn name -> nodes[name] end)), params}
@@ -53,18 +62,36 @@ defmodule AxonOnnx.Deserialize do
   defp get_inputs(%Graph{input: inputs}, params, dimensions) do
     Enum.reduce(inputs, %{}, fn %Value{name: name, type: %Type{value: value}}, acc ->
       if Map.has_key?(params, name) do
+        # IO.puts "exisiting input"
+        # IO.inspect acc, structs: false
         acc
       else
         case value do
           {:tensor_type, %Placeholder{} = tensor} ->
-            input_shape = shape!(tensor, dimensions)
+            input_shape = case Tuple.to_list(shape!(tensor, dimensions)) do
+              [-1 | non_batch_size_dimensions] -> List.to_tuple([nil | non_batch_size_dimensions])
+                # input_shape_with_variable_batch_size
+                # |> List.to_tuple
+                # |> Tuple.insert_at(0, nil)
+                # |> Tuple.delete_at(1)
+              input_shape_with_constant_batch_size -> List.to_tuple(input_shape_with_constant_batch_size)
+            end
+
+            # input_shape |> IO.inspect
+            # {-1, remainder} = input_shape
+            # remainder |> IO.inspect
 
             input_shape =
               if tuple_size(input_shape) == 1,
                 do: Tuple.insert_at(input_shape, 0, nil),
                 else: input_shape
 
-            Map.put(acc, name, Axon.input(input_shape))
+                # IO.puts "missing input"
+                Map.put(acc, name, Axon.input(input_shape))
+                # IO.inspect input_shape
+                # Axon.input(input_shape) |> IO.inspect structs: false
+
+              # raise "Stop execution after creating an input node"
 
           _ ->
             raise ArgumentError, "unsupported input type"
@@ -73,9 +100,18 @@ defmodule AxonOnnx.Deserialize do
     end)
   end
 
-  defp get_params(%Graph{initializer: initializer}) do
-    Enum.reduce(initializer, %{}, fn %Tensor{name: name} = tensor, params ->
-      Map.put(params, name, tensor!(tensor))
+  defp get_params(%Graph{initializer: initializer} = graph) do
+    # IO.inspect graph
+    Enum.reduce(initializer, %{}, fn %Tensor{name_prefix: layer, name_suffix: name} = tensor, params ->
+      value = tensor!(tensor)
+      Map.put(
+        params,
+        layer,
+        case params[layer] do
+          nil -> %{name => value}
+          layer_params -> Map.put(layer_params, name, value)
+        end
+      )
     end)
   end
 
@@ -84,7 +120,9 @@ defmodule AxonOnnx.Deserialize do
   end
 
   defp get_nodes(pruned_nodes, inp, params, used_params) do
-    Enum.reduce(pruned_nodes, {inp, used_params}, fn %Node{op_type: op_type} = op_node,
+    # IO.puts "Calling get_nodes ..."
+    # IO.inspect inp, structs: false
+    {model, used_params} = Enum.reduce(pruned_nodes, {inp, used_params}, fn %Node{op_type: op_type} = op_node,
                                                      {axon, used_params} ->
       case op_type do
         "Abs" ->
@@ -157,6 +195,9 @@ defmodule AxonOnnx.Deserialize do
 
         "Flatten" ->
           to_axon_flatten(op_node, axon, params, used_params)
+
+        "Concatenate" ->
+          to_axon_concatenate(op_node, axon, params, used_params)
 
         "Floor" ->
           to_axon_nx(op_node, axon, params, used_params, &Nx.floor/1)
@@ -317,6 +358,8 @@ defmodule AxonOnnx.Deserialize do
           raise "unsupported #{op} op in graph"
       end
     end)
+
+    {model, params}
   end
 
   # Builds a generic Nx layer by applying the given operation
@@ -370,7 +413,7 @@ defmodule AxonOnnx.Deserialize do
   #
   # TODO(seanmor5): Handle alpha, beta attrs
   defp to_axon_dense(
-         %Node{op_type: op_type, input: inputs, output: [output_name], attribute: attrs},
+         %Node{op_type: op_type, input: inputs, name: name, output: [output_name], attribute: attrs} = node,
          axon,
          params,
          used_params
@@ -378,7 +421,14 @@ defmodule AxonOnnx.Deserialize do
     [input, weight | maybe_bias] = inputs
 
     input = input_or_param!(input, params, axon, used_params)
-    weight = input_or_param!(weight, params, axon, used_params)
+    weight = input_or_param!(%{layer: name, value: weight}, params, axon, used_params)
+
+    # IO.inspect %{node: node, axon: axon, params: params, used_params: used_params}
+
+    # IO.puts "Got weight:"
+    # IO.inspect weight
+
+    # raise "Stop execution after obtaining weight"
 
     case op_type do
       "MatMul" ->
@@ -395,51 +445,68 @@ defmodule AxonOnnx.Deserialize do
         {updated_axon, updated_params}
 
       "Gemm" ->
-        dense_options = options!(attrs)
+        case name do
+          "embedding" <> _ ->
+            {vocab_size, embedding_size} = Nx.shape(weight)
+            results = {
+              Map.put(
+                axon,
+                output_name,
+                Axon.embedding(input, vocab_size, embedding_size, name: output_name) # TODO: Add support for kernel_initializer option
+              ),
+              Map.put(used_params, output_name <> "_kernel", weight)
+            }
+            # raise "Cannot handle embedding layer with size #{embedding_size}"
+          _ ->
+            dense_options = options!(attrs)
 
-        # TODO(seanmor5): Handle alpha, beta
-        _alpha = dense_options["alpha"]
-        _beta = dense_options["beta"]
+            # TODO(seanmor5): Handle alpha, beta
+            _alpha = dense_options["alpha"]
+            _beta = dense_options["beta"]
 
-        trans_a = dense_options["transA"]
-        trans_b = dense_options["transB"]
+            trans_a = dense_options["transA"]
+            trans_b = dense_options["transB"]
 
-        input =
-          if trans_a == 1 do
-            Nx.transpose(input)
-          else
-            input
-          end
+            input =
+              if trans_a == 1 do
+                Nx.transpose(input)
+              else
+                input
+              end
 
-        weight =
-          if trans_b == 1 do
-            Nx.transpose(weight)
-          else
-            weight
-          end
+            weight =
+              if trans_b == 1 do
+                Nx.transpose(weight)
+              else
+                weight
+              end
 
-        {_, units} = Nx.shape(weight)
+            {_, units} = Nx.shape(weight)
 
-        updated_axon =
-          Map.put(
-            axon,
-            output_name,
-            Axon.dense(input, units, use_bias: maybe_bias != [], name: output_name)
-          )
+            updated_axon =
+              Map.put(
+                axon,
+                output_name,
+                Axon.dense(input, units, use_bias: maybe_bias != [], name: output_name)
+              )
 
-        updated_params =
-          if maybe_bias == [] do
-            Map.put(used_params, output_name <> "_kernel", weight)
-          else
-            [bias] = maybe_bias
-            bias = input_or_param!(bias, params, axon, used_params)
+            updated_params =
+              if maybe_bias == [] do
+                Map.put(used_params, output_name <> "_kernel", weight)
+              else
+                [bias] = maybe_bias
+                bias = input_or_param!(bias, params, axon, used_params)
 
-            used_params
-            |> Map.put(output_name <> "_kernel", weight)
-            |> Map.put(output_name <> "_bias", bias)
-          end
+                used_params
+                |> Map.put(output_name <> "_kernel", weight)
+                |> Map.put(output_name <> "_bias", bias)
+              end
 
-        {updated_axon, updated_params}
+              # IO.puts "Updated axon after processing dense layer >>>"
+              # IO.inspect updated_axon, structs: false 
+
+              {updated_axon, updated_params}
+        end
     end
   end
 
@@ -763,6 +830,39 @@ defmodule AxonOnnx.Deserialize do
     {Map.put(axon, output_name, Axon.flatten(inp, name: output_name)), used_params}
   end
 
+  defp to_axon_concatenate(
+    %Node{
+      op_type: "Concatenate",
+      input: inputs,
+      output: [output_name],
+      attribute: [
+        %Onnx.AttributeProto{
+          type: :INT,
+          name: "axis",
+          i: axis
+        } | _ ]
+    } = node,
+    axon,
+    params,
+    used_params
+  ) do
+    # %{node: node, axon: axon, params: params, used_params: used_params} |> IO.inspect structs: false
+    # inp = input_or_param!(inp, params, axon, used_params)
+
+    {
+      Map.put(
+        axon,
+        output_name,
+        Axon.concatenate(for input_layer_name <- inputs do input_or_param!(input_layer_name, params, axon, used_params) end,
+        name: output_name,
+        axis: axis
+      )
+      ), used_params
+    } # |> IO.inspect structs: false
+
+    # raise "Incomplete implementation of the concatenation layer deserializer"
+  end
+
   # Builds an Axon transpose layer. Transpose is given by
   # the perm option in Node attribute.
   defp to_axon_transpose(
@@ -886,11 +986,22 @@ defmodule AxonOnnx.Deserialize do
     |> Nx.reshape(shape)
   end
 
+  defp input_or_param!(%{layer: layer, value: name}, params, axon, used_params) do
+    cond do
+      Map.has_key?(params, layer) ->
+        case params[layer][name] do
+          nil -> raise "Unable to find parameter #{name} for layer #{layer}"
+          value -> value
+        end
+
+      true ->
+        raise "unable to find value with name #{inspect(name)} in" <>
+                " parameters or model"
+    end
+  end
+
   defp input_or_param!(name, params, axon, used_params) do
     cond do
-      Map.has_key?(params, name) ->
-        params[name]
-
       Map.has_key?(axon, name) ->
         axon[name]
 

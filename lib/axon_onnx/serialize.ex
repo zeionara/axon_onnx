@@ -20,7 +20,10 @@ defmodule AxonOnnx.Serialize do
     fname = opts[:filename] || output_name <> ".onnx"
 
     onnx_model = to_onnx_model(axon, params, opts)
+    # IO.puts "before encoding model"
+    # IO.inspect Model
     encoded = Model.encode!(onnx_model)
+    # IO.puts "after encoding model"
 
     {:ok, file} = File.open(fname, [:write])
     IO.binwrite(file, encoded)
@@ -469,7 +472,7 @@ defmodule AxonOnnx.Serialize do
 
         constant_name = name <> "_squeeze_axes"
         axes = Enum.to_list(2..(Nx.rank(shape) - 1)//1)
-        axes_tensor = nx_to_tensor_proto(constant_name, Nx.tensor(axes))
+        axes_tensor = nx_to_tensor_proto(%{value: constant_name, layer: name}, Nx.tensor(axes))
         value_attr = to_attr("value", :TENSOR, axes_tensor)
 
         constant_node = %Node{
@@ -560,7 +563,7 @@ defmodule AxonOnnx.Serialize do
       # IO.puts "Value >>>"
       # IO.inspect params_or_initializers[param.layer][param.value]
       # nx_to_tensor_proto(param, params_or_initializers[param])
-      nx_to_tensor_proto(param.value, params_or_initializers[param.layer][param.value])
+      nx_to_tensor_proto(param, params_or_initializers[param.layer][param.value]) # |> IO.inspect charlists: :as_lists
     end)
   end
 
@@ -596,8 +599,9 @@ defmodule AxonOnnx.Serialize do
     %Shape{dim: dims}
   end
 
-  def nx_to_tensor_proto(param_name, tensor) do
-    dims = Nx.shape(tensor) |> Tuple.to_list()
+  def nx_to_tensor_proto(%{value: param_name, layer: param_layer}, tensor) do
+    # IO.puts "Tensor shape >>>"
+    dims = Nx.shape(tensor) |> Tuple.to_list() # |> IO.inspect
     # TODO: fix
     data_type =
       case Nx.type(tensor) do
@@ -609,6 +613,9 @@ defmodule AxonOnnx.Serialize do
       end
 
     raw_data = Nx.to_binary(tensor)
-    %Onnx.TensorProto{name: param_name, dims: dims, data_type: data_type, raw_data: raw_data}
+    %Onnx.TensorProto{
+      name: param_name, # "#{param_name}_#{param_layer}",
+      name_suffix: param_name, name_prefix: param_layer, dims: dims, data_type: data_type, raw_data: raw_data
+    }
   end
 end
