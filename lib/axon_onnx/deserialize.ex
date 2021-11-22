@@ -107,7 +107,7 @@ defmodule AxonOnnx.Deserialize do
     end)
   end
 
-  defp get_params(%Graph{initializer: initializer} = graph) do
+  defp get_params(%Graph{initializer: initializer}) do #  = graph) do
     # IO.inspect graph
     Enum.reduce(initializer, %{}, fn %Tensor{name_prefix: layer, name_suffix: name} = tensor, params ->
       value = tensor!(tensor)
@@ -129,8 +129,11 @@ defmodule AxonOnnx.Deserialize do
   defp get_nodes(pruned_nodes, inp, params, used_params) do
     # IO.puts "Calling get_nodes ..."
     # IO.inspect inp, structs: false
-    {model, used_params} = Enum.reduce(pruned_nodes, {inp, used_params}, fn %Node{op_type: op_type} = op_node,
-                                                     {axon, used_params} ->
+    # {model, used_params} = 
+    {model, _} = 
+      Enum.reduce(
+        pruned_nodes, {inp, used_params},
+        fn %Node{op_type: op_type} = op_node, {axon, used_params} ->
       case op_type do
         "Abs" ->
           to_axon_nx(op_node, axon, params, used_params, &Nx.abs/1)
@@ -420,7 +423,7 @@ defmodule AxonOnnx.Deserialize do
   #
   # TODO(seanmor5): Handle alpha, beta attrs
   defp to_axon_dense(
-         %Node{op_type: op_type, input: inputs, name: name, output: [output_name], attribute: attrs} = node,
+         %Node{op_type: op_type, input: inputs, name: name, output: [output_name], attribute: attrs}, # = node,
          axon,
          params,
          used_params
@@ -455,7 +458,7 @@ defmodule AxonOnnx.Deserialize do
         case name do
           "embedding" <> _ ->
             {vocab_size, embedding_size} = Nx.shape(weight)
-            results = {
+            {
               Map.put(
                 axon,
                 output_name,
@@ -810,7 +813,7 @@ defmodule AxonOnnx.Deserialize do
   end
 
   defp to_axon_reshape(
-         %Node{op_type: "Reshape", input: [inp], attribute: attrs, output: [output_name]} = node,
+         %Node{op_type: "Reshape", input: [inp], attribute: attrs, output: [output_name]}, # = node,
          axon,
          params,
          used_params
@@ -872,7 +875,7 @@ defmodule AxonOnnx.Deserialize do
           name: "axis",
           i: axis
         } | _ ]
-    } = node,
+    }, # = node,
     axon,
     params,
     used_params
@@ -1017,7 +1020,7 @@ defmodule AxonOnnx.Deserialize do
     |> Nx.reshape(shape)
   end
 
-  defp input_or_param!(%{layer: layer, value: name}, params, axon, used_params) do
+  defp input_or_param!(%{layer: layer, value: name}, params, _, _) do # _ = axon, used_params
     cond do
       Map.has_key?(params, layer) ->
         case params[layer][name] do
@@ -1031,7 +1034,7 @@ defmodule AxonOnnx.Deserialize do
     end
   end
 
-  defp input_or_param!(name, params, axon, used_params) do
+  defp input_or_param!(name, _, axon, used_params) do # params
     cond do
       Map.has_key?(axon, name) ->
         axon[name]

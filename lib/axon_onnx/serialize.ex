@@ -187,8 +187,8 @@ defmodule AxonOnnx.Serialize do
          %Axon{
            op: :flatten,
            name: name,
-           parent: %Axon{name: inp_name} = parent,
-           params: params,
+           parent: %Axon{name: inp_name} = parent
+           # params: params,
          },
          inputs,
          param_names,
@@ -215,9 +215,9 @@ defmodule AxonOnnx.Serialize do
       op: :reshape,
       name: name,
       output_shape: shape,
-      parent: %Axon{name: inp_name} = parent,
-      params: params,
-    } = axon,
+      parent: %Axon{name: inp_name} = parent
+      # params: params,
+    }, # = axon,
     inputs,
     param_names,
     nodes
@@ -256,12 +256,12 @@ defmodule AxonOnnx.Serialize do
            op: :concatenate,
            name: name,
            parent: parents,
-           params: params,
+           params: _, # params,
            opts: [axis: axis]
          },
-         inputs,
-         param_names,
-         nodes
+         _, # inputs,
+         _, # param_names,
+         _ # nodes
        ) do
 
          # {inp_names, inputs, param_names, nodes} = 
@@ -605,7 +605,7 @@ defmodule AxonOnnx.Serialize do
       dims
       |> Enum.map(fn x ->
         case x do
-          %Onnx.TensorShapeProto.Dimension{value: {:dim_value, nil}} -> %Onnx.TensorShapeProto.Dimension{x | value: {:dim_value, -1}}
+          %Onnx.TensorShapeProto.Dimension{value: {:dim_value, nil}} -> %Onnx.TensorShapeProto.Dimension{x | value: {:dim_value, nil_replacement}}
           _ -> x
         end
       end)
