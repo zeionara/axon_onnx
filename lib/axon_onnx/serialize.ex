@@ -80,9 +80,10 @@ defmodule AxonOnnx.Serialize do
     #                  IO.inspect nodes
     #                  to_initializers(params_or_initializers[node.name], [Enum.at(param_names, i)])# Enum.at(param_names, i))
     #                end)
+    #
+    # IO.inspect %{inputs: inputs, param_names: param_names, nodes: nodes}
 
-    initializers = to_initializers(params_or_initializers, param_names)
-
+    initializers = to_initializers(params_or_initializers, param_names) # |> IO.inspect
 
     # Parameters need to be specified as graph inputs as well
     # updated_inputs = inputs ++ handle_param_names(nodes, param_names, params_or_initializers, fn (name, x) -> to_value_info(name, Nx.shape(x)) end)
@@ -91,8 +92,14 @@ defmodule AxonOnnx.Serialize do
       |> Enum.reduce(
         inputs,
         fn x, acc ->
-          param_value = to_value_info(x.value, Nx.shape(params_or_initializers[x.layer][x.value]))
-          [param_value | acc]
+          case x do
+            %{layer: layer, value: name, differentiable: false, state: state} ->
+              acc
+              # to_value_info(name, Nx.shape(state))
+            %{layer: layer, value: name} ->
+              [ to_value_info(name, Nx.shape(params_or_initializers[layer][name])) | acc ]
+          end
+          # [param_value | acc]
         end
       )
 
@@ -206,6 +213,90 @@ defmodule AxonOnnx.Serialize do
       name: name,
       op_type: "Flatten"
     }
+
+    {inputs, updated_param_names, [node | nodes]}
+  end
+
+  def to_onnx(
+         %Axon{
+           op: :pad,
+           name: name,
+           parent: %Axon{name: inp_name} = parent,
+           opts: [padding_config: padding_config, value: constant_value]
+           # params: params,
+         } = axon,
+         inputs,
+         param_names,
+         nodes
+  ) do
+    {inputs, param_names, nodes} = to_onnx(parent, inputs, param_names, nodes) # |> IO.inspect
+
+    # IO.inspect %{axon: axon, inputs: inputs, param_names: param_names, nodes: nodes}, structs: false
+    
+    # IO.puts "Serializing pad layer..."
+    # IO.inspect axon, structs: false
+
+    mode_attr = to_attr(
+      "mode",
+      :STRING,
+      "constant" # TODO: support other modes (reflect and edge)
+    ) # |> IO.inspect
+
+    # constant_value_attr = to_attr(
+    #   "constant_value",
+    #   :FLOAT,
+    #   constant_value
+    # )
+
+    pads_value = padding_config
+                 |> Enum.reduce([], fn {n_left_pads, n_right_pads}, n_pads -> [ n_right_pads | [ n_left_pads | n_pads] ] end)
+                 |> Enum.reverse
+                 |> Nx.tensor
+           # |> Enum.join(" ")
+           # |> IO.inspect
+    pads_param = %{
+      layer: name,
+      value: "config",
+      differentiable: false,
+      state: pads_value
+    }
+
+    inp_param = inp_name # %{layer: inp_name}
+
+    {node_inputs, updated_param_names} = {["config", inp_param], [pads_param | param_names]}
+
+    # node_inputs = 
+    #   case {mode_attr.s, [ pads | node_inputs ]} do
+    #     {"constant", inputs} -> [ "#{constant_value}" | inputs ]
+    #     {_, inputs} -> inputs
+    #   end
+    #   |> Enum.reverse
+    #   # |> IO.inspect
+    
+    {node_inputs, updated_param_names} = case mode_attr.s do
+      "constant"  -> 
+        constant_value_param = %{
+          layer: name,
+          value: "constant_value",
+          differentiable: false,
+          state: Nx.tensor(constant_value)
+        }
+        {["constant_value" | node_inputs], [constant_value_param | updated_param_names]}
+      _ -> {node_inputs, updated_param_names}
+    end
+
+    node = %Node{
+      input: Enum.reverse(node_inputs),
+      output: [name],
+      name: name,
+      op_type: "Pad",
+      attribute: [mode_attr]
+    }
+
+    # IO.inspect node
+    # IO.inspect updated_param_names
+
+    # {_, _} = 2
 
     {inputs, updated_param_names, [node | nodes]}
   end
@@ -577,7 +668,13 @@ defmodule AxonOnnx.Serialize do
       # IO.puts "Value >>>"
       # IO.inspect params_or_initializers[param.layer][param.value]
       # nx_to_tensor_proto(param, params_or_initializers[param])
-      nx_to_tensor_proto(param, params_or_initializers[param.layer][param.value]) # |> IO.inspect charlists: :as_lists
+      case param do
+        %{layer: layer, value: name, differentiable: false, state: state} -> 
+          nx_to_tensor_proto(param, state)
+        %{layer: layer, value: name} ->
+          nx_to_tensor_proto(param, params_or_initializers[layer][name]) # |> IO.inspect charlists: :as_lists
+        _ -> raise "Invalid parameter description: #{IO.inspect param}"
+      end
     end)
   end
 

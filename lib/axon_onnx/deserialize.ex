@@ -79,9 +79,11 @@ defmodule AxonOnnx.Deserialize do
       else
         case value do
           {:tensor_type, %Placeholder{} = tensor} ->
+            # IO.inspect value
             input_shape = 
               shape!(tensor, dimensions)
               |> decode_shape
+            # IO.inspect input_shape
             
             # shape!(tensor, dimensions) |> IO.inspect
             # input_shape |> IO.inspect
@@ -645,12 +647,16 @@ defmodule AxonOnnx.Deserialize do
   end
 
   defp to_axon_pad(
-         %Node{op_type: "Pad", input: inputs, output: [output_name], attribute: attrs},
+         %Node{op_type: "Pad", input: inputs, output: [output_name], attribute: attrs, name: name} = node,
          axon,
          params,
          used_params
-       ) do
+  ) do
+    # IO.inspect params
+    # IO.inspect used_params
     pad_options = options!(attrs)
+
+    # IO.inspect %{node: node, pad_options: pad_options}
 
     case pad_options["mode"] do
       "constant" ->
@@ -665,24 +671,34 @@ defmodule AxonOnnx.Deserialize do
 
     [data, pads | maybe_constant] = inputs
 
-    inp = input_or_param!(data, params, axon, used_params)
+
+    inp = input_or_param!(data, params, axon, used_params) # |> IO.inspect
     # TODO(seanmor5): Pads should probably be scrubbed from the graph
     # and parameters
-    pads = input_or_param!(pads, params, axon, used_params)
-
-    padding_config =
-      pads.ints
+    padding_config = 
+      input_or_param!(%{layer: name, value: pads}, params, axon, used_params)
+      |> Nx.to_flat_list
       |> Enum.chunk_every(2)
-      |> Enum.zip()
+      |> Enum.map(fn pair -> List.to_tuple(pair) end)
+      # |> IO.inspect
+
+
+    # padding_config =
+    #   pads.ints
+    #   |> Enum.chunk_every(2)
+    #   |> Enum.zip()
 
     constant_value =
       case maybe_constant do
         [] ->
           0
 
-        [value] ->
-          tensor!(value)
+        [param_name] ->
+          input_or_param!(%{layer: name, value: param_name}, params, axon, used_params)
+          |> Nx.to_scalar
+          # tensor!(value)
       end
+      # |> IO.inspect
 
     updated_axon =
       Map.put(axon, output_name, Axon.pad(inp, padding_config, constant_value, name: output_name))
